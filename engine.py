@@ -228,12 +228,21 @@ def build_suite() -> dict:
     return {"questions": [(k, q, a) for k, q, a in qs], "prompt": prompt}
 
 
-def grade_suite(text: str, suite: dict) -> tuple[int, list, dict]:
+def _parse_answers(text: str) -> dict:
+    """宽容解析 “Qn: 答案”，兼容列表符号、单行多题、markdown。"""
     got = {}
     for line in (text or "").splitlines():
-        m = re.match(r"\s*Q([1-9])\s*[:：]\s*(.+)", line, re.I)
+        m = re.match(r"\s*[-*•\d.、)）]*\s*[Qq]\s*([1-9])\s*[:：]\s*(.+)", line)
         if m:
             got["Q" + m.group(1)] = m.group(2).strip()
+    if len(got) < 5:
+        for m in re.finditer(r"[Qq]\s*([1-9])\s*[:：]\s*([^Qq\n]{1,80})", text or ""):
+            got.setdefault("Q" + m.group(1), m.group(2).strip())
+    return got
+
+
+def grade_suite(text: str, suite: dict) -> tuple[int, list, dict]:
+    got = _parse_answers(text)
     score, detail, vec = 0, [], []
     for k, _q, exp in suite["questions"]:
         g = got.get(k, "")
@@ -407,6 +416,42 @@ VENDOR_MODEL_RE = re.compile(
     r"|grok-[\w.\-]+|gemini-[\w.\-]+|deepseek-[\w.\-]+|glm-[\w.\-]+|kimi-[\w.\-]+"
     r"|qwen[\w.\-]*|doubao[\w.\-]*|minimax-[\w.\-]+|mimo-[\w.\-]+|hy[\w.\-]*)$", re.I)
 
+# ---- 模型家族目录（catalog.json），用于判断"名字属于哪个厂商" ----
+CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.json")
+
+
+def _load_catalog():
+    try:
+        with open(CATALOG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return {"families": [], "alias_suffix_blacklist": {"suffixes": []}}
+
+
+CATALOG = _load_catalog()
+_FAMILY_RX = [(c["vendor"], c["family"], re.compile(c["regex"], re.I))
+              for c in CATALOG.get("families", [])]
+ALIAS_SUFFIXES = [s.lower() for s in
+                  CATALOG.get("alias_suffix_blacklist", {}).get("suffixes", [])]
+
+
+def vendor_of(name: str):
+    if not name:
+        return None
+    n = name.split("/")[-1]
+    for v, _fam, rx in _FAMILY_RX:
+        if rx.match(n):
+            return v
+    return None
+
+
+def family_of(name: str):
+    n = (name or "").split("/")[-1]
+    for _v, fam, rx in _FAMILY_RX:
+        if rx.match(n):
+            return fam
+    return None
+
 ANTHROPIC_USAGE = {"input_tokens", "output_tokens",
                    "cache_creation_input_tokens", "cache_read_input_tokens"}
 OPENAI_USAGE = {"prompt_tokens", "completion_tokens", "total_tokens",
@@ -465,6 +510,17 @@ def det_chain(t: Target, budget: Budget) -> dict:
         reasons.append(f"错误/响应体出现中转特征词：{', '.join(err_hits[:4])}")
         score += 6
 
+    # 返回的模型名属于"另一个厂商" → 明确被转手
+    v_req, v_served = vendor_of(t.model), vendor_of(served)
+    if v_req and v_served and v_req != v_served:
+        reasons.append(f"返回名属于 {v_served} 厂商，但你请求的是 {v_req}")
+        score += 15
+    low = (served or "").lower()
+    hit_sfx = [s for s in ALIAS_SUFFIXES if low.endswith(s)]
+    if hit_sfx:
+        reasons.append(f"返回名带中转站专有后缀 {hit_sfx[0]}（厂商无此后缀）")
+        score += 10
+
     # 自身是中转软件（oneapi 头）却出现别家中转的字段（credit_usage 等）
     # → 说明它把请求又转给了另一层中转，而不是直连厂商号池
     if chain_fields and header_hits:
@@ -479,10 +535,25 @@ def det_chain(t: Target, budget: Budget) -> dict:
 
 
 def det_bench(t: Target, budget: Budget, suite: dict) -> dict:
-    status, _h, resp, text, pin, pout, err = call_target(
-        t, {"messages": [{"role": "user", "content": suite["prompt"]}]}, budget, max_tokens=600)
+    text, status, err = "", 0, None
+    # 依次尝试：默认 → 低推理 → 关推理（推理模型否则会把 token 全烧在思考上）
+    ladder = [
+        ({}, 4000),
+        ({"reasoning_effort": "low"}, 2400),
+        ({"reasoning_effort": "none"}, 1600),
+    ]
+    for extra, mt in ladder:
+        payload = {"messages": [{"role": "user", "content": suite["prompt"]}]}
+        payload.update(extra)
+        status, _h, resp, text, pin, pout, err = call_target(
+            t, payload, budget, max_tokens=mt)
+        if status == 200 and not err and (text or "").strip():
+            break
     if status != 200 or err:
         return {"detector": "能力基准", "ok": False, "detail": err or f"HTTP {status}",
+                "score": 0, "total": len(suite["questions"]), "rows": [], "vec": []}
+    if not (text or "").strip():
+        return {"detector": "能力基准", "ok": False, "detail": "正文为空（token 全用于推理）",
                 "score": 0, "total": len(suite["questions"]), "rows": [], "vec": []}
     score, rows, vec = grade_suite(text, suite)
     return {"detector": "能力基准", "ok": True, "score": score, "total": len(rows), "rows": rows, "vec": vec}
@@ -690,6 +761,10 @@ def record_baseline(name: str, base: str, key: str, flavor: str, model: str,
     inj = det_injection(t, b, samples=samples)
     tk = det_tokenizer(t, b)
     bn = det_bench(t, b, suite)
+    vec = (bn or {}).get("vec", [])
+    if not bn.get("ok") or not any(v and not str(v).startswith("WRONG") for v in vec):
+        raise RuntimeError(f"基准作答无效（{bn.get('detail') or bn.get('score')}/{bn.get('total')}），"
+                           "可能输出被推理占满或格式无法解析，已放弃保存")
     sig = {
         "name": name,
         "family": re.sub(r"[^a-z0-9.\-]", "", model.split("/")[-1].lower()),

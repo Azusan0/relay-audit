@@ -1,0 +1,27 @@
+{
+  "_comment": "常见模型家族目录：用于判断'模型名属于哪个厂商'与'规范名长什么样'。新增家族直接加条目。",
+  "families": [
+    { "vendor": "anthropic", "family": "claude-opus",    "regex": "^claude-opus-[0-9][0-9.\\-]*$",     "usage": "anthropic", "examples": ["claude-opus-5", "claude-opus-4-8"] },
+    { "vendor": "anthropic", "family": "claude-sonnet",  "regex": "^claude-sonnet-[0-9][0-9.\\-]*$",   "usage": "anthropic", "examples": ["claude-sonnet-5", "claude-sonnet-4-6"] },
+    { "vendor": "anthropic", "family": "claude-haiku",   "regex": "^claude-haiku-[0-9][0-9.\\-]*$",    "usage": "anthropic", "examples": ["claude-haiku-4-5"] },
+    { "vendor": "anthropic", "family": "claude-fable",   "regex": "^claude-fable-[0-9][0-9.\\-]*$",    "usage": "anthropic", "examples": ["claude-fable-5"] },
+    { "vendor": "openai",    "family": "gpt",            "regex": "^gpt-[0-9][0-9.a-z\\-]*$",          "usage": "openai",    "examples": ["gpt-6-sol", "gpt-5.6-terra"] },
+    { "vendor": "openai",    "family": "o-series",       "regex": "^o[0-9][a-z0-9\\-]*$",              "usage": "openai",    "examples": ["o4", "o4-mini"] },
+    { "vendor": "openai",    "family": "gpt-image",      "regex": "^gpt-image-[0-9][0-9.a-z\\-]*$",    "usage": "openai",    "examples": ["gpt-image-2"] },
+    { "vendor": "deepseek",  "family": "deepseek",       "regex": "^deepseek-[a-z0-9.\\-]*$",          "usage": "openai",    "examples": ["deepseek-chat", "deepseek-v4-pro"] },
+    { "vendor": "moonshot",  "family": "kimi",           "regex": "^kimi-[a-z0-9.\\-]*$",              "usage": "openai",    "examples": ["kimi-k3", "kimi-k2.5"] },
+    { "vendor": "zhipu",     "family": "glm",            "regex": "^glm-[0-9][0-9.a-z\\-]*$",          "usage": "openai",    "examples": ["glm-5.3", "glm-4.6"] },
+    { "vendor": "alibaba",   "family": "qwen",           "regex": "^qwen[0-9.a-z\\-]*$",               "usage": "openai",    "examples": ["qwen3.8-max", "qwen3.7-plus"] },
+    { "vendor": "google",    "family": "gemini",         "regex": "^gemini-[0-9][0-9.a-z\\-]*$",       "usage": "openai",    "examples": ["gemini-3.8-flash", "gemini-2.5-pro"] },
+    { "vendor": "xai",       "family": "grok",           "regex": "^grok-[0-9][0-9.a-z\\-]*$",         "usage": "openai",    "examples": ["grok-4.6", "grok-4.5"] },
+    { "vendor": "minimax",   "family": "minimax",        "regex": "^minimax-[a-z0-9.\\-]*$",           "usage": "openai",    "examples": ["minimax-m3.1-flash"] },
+    { "vendor": "bytedance", "family": "doubao",         "regex": "^doubao-[a-z0-9.\\-]*$",            "usage": "openai",    "examples": ["doubao-seed-2.1-pro"] },
+    { "vendor": "tencent",   "family": "hunyuan",        "regex": "^hy[0-9a-z.\\-]*$",                 "usage": "openai",    "examples": ["hy3", "hy4-preview"] },
+    { "vendor": "xiaomi",    "family": "mimo",           "regex": "^mimo-[a-z0-9.\\-]*$",              "usage": "openai",    "examples": ["mimo-v2.6-pro"] },
+    { "vendor": "stepfun",   "family": "step",           "regex": "^step-[0-9a-z.\\-]*$",              "usage": "openai",    "examples": ["step-5-preview"] }
+  ],
+  "alias_suffix_blacklist": {
+    "_comment": "这些后缀只在中转站出现、厂商没有，出现即说明经过了一层改名",
+    "suffixes": ["-luna", "-astra", "-sol", "-terra", "-reserve", "-5-5", "-sg", "-highspeed", "-spark"]
+  }
+}

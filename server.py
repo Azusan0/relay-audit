@@ -95,6 +95,13 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 return self._json({"ok": False, "error": "job 不存在"}, 404)
             return self._json({"ok": True, "status": job["status"]})
+        if path == "/api/baselines":
+            items = [{
+                "file": b.get("_file"), "name": b.get("name"), "family": b.get("family"),
+                "model": b.get("model"), "bench": b.get("bench"),
+                "served": b.get("served"), "recorded": b.get("recorded"),
+            } for b in engine.load_baselines()]
+            return self._json({"ok": True, "baselines": items})
         if path == "/api/export":
             job = JOBS.get(qs.get("job", [""])[0])
             if not job or not job.get("report"):
@@ -140,6 +147,29 @@ class Handler(BaseHTTPRequestHandler):
                 job["stop"] = True
                 return self._json({"ok": True})
             return self._json({"ok": False, "error": "job 不存在"}, 404)
+
+        if u.path == "/api/record":
+            try:
+                body = self._read_json()
+                missing = [k for k in ("name", "base", "key", "model") if not body.get(k)]
+                if missing:
+                    return self._json({"ok": False, "error": "缺少字段: " + ", ".join(missing)}, 400)
+                path, sig = engine.record_baseline(
+                    body["name"], body["base"], body["key"],
+                    body.get("flavor", "openai"), body["model"])
+                return self._json({"ok": True, "file": os.path.basename(path),
+                                   "sig": {k: v for k, v in sig.items() if k != "vec"}})
+            except Exception as e:  # noqa: BLE001
+                return self._json({"ok": False, "error": repr(e)}, 400)
+
+        if u.path == "/api/baseline/delete":
+            body = self._read_json()
+            fn = os.path.basename(body.get("file", ""))
+            p = os.path.join(engine.BASELINE_DIR, fn)
+            if fn and os.path.isfile(p):
+                os.remove(p)
+                return self._json({"ok": True})
+            return self._json({"ok": False, "error": "文件不存在"}, 404)
 
         return self._json({"ok": False, "error": "not found"}, 404)
 

@@ -1,0 +1,17 @@
+{
+  "_说明": "复制成 endpoints.json 后填入官方 key，再运行: python record_all.py",
+  "endpoints": [
+    { "vendor": "anthropic", "base": "https://api.anthropic.com", "key": "sk-ant-xxx",
+      "flavor": "anthropic", "models": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] },
+    { "vendor": "openai", "base": "https://api.openai.com/v1", "key": "sk-xxx",
+      "flavor": "openai", "models": ["gpt-6-sol", "gpt-5.6-terra", "gpt-5.4-mini"] },
+    { "vendor": "deepseek", "base": "https://api.deepseek.com/v1", "key": "sk-xxx",
+      "flavor": "openai", "models": ["deepseek-chat", "deepseek-reasoner"] },
+    { "vendor": "moonshot", "base": "https://api.moonshot.cn/v1", "key": "sk-xxx",
+      "flavor": "openai", "models": ["kimi-k2.5"] },
+    { "vendor": "zhipu", "base": "https://open.bigmodel.cn/api/paas/v4", "key": "xxx",
+      "flavor": "openai", "models": ["glm-4.6"] },
+    { "vendor": "google", "base": "https://generativelanguage.googleapis.com/v1beta/openai", "key": "xxx",
+      "flavor": "openai", "models": ["gemini-2.5-pro"] }
+  ]
+}

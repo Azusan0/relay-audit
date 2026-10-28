@@ -1,0 +1,25 @@
+{
+  "name": "deepseek-deepseek-flash",
+  "family": "deepseek-flash",
+  "model": "deepseek-flash",
+  "served": "deepseek-flash",
+  "vec": [
+    "8110",
+    "89",
+    "7",
+    "538992043",
+    "8"
+  ],
+  "bench": "5/5",
+  "tokenizer": {
+    "delta": 112,
+    "ratio": 2.647
+  },
+  "injection_samples": [
+    36,
+    35,
+    35
+  ],
+  "recorded": "2026-10-29 07:02:15",
+  "base": "https://api.deepseek.com/v1"
+}

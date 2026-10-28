@@ -69,6 +69,22 @@ python engine.py record official-deepseek-v4     https://api.deepseek.com/v1 sk-
 签名存 `baselines/*.json`（答案向量、tokenizer、served、注入样本）。此后每次审计自动比对：
 **答案最接近哪个基准**；若最接近的基准与它自称的型号不一致 → 判定冒名（例如“自称 claude，答案却最像官方 deepseek”）。
 
+## 基准库扩充（覆盖市面常见模型）
+
+`catalog.json` 已收录常见家族：anthropic / openai / deepseek / moonshot / zhipu / alibaba /
+google / xai / minimax / bytedance / tencent / xiaomi / stepfun —— 用于判断“这个模型名属于哪个厂商”、
+以及识别中转站自造的别名后缀（`-luna` `-astra` `-sol` `-5-5` 等）。
+
+但**真实的基准签名必须在官方端点录制**（拿中转站的 key 录，等于把假货当标准）：
+
+1. 复制 `endpoints.example.json` → `endpoints.json`（已被 `.gitignore` 排除，不会入库），填入各厂商官方 key
+2. 运行 `python record_all.py`
+3. 签名单存于 `baselines/*.json`；可在 UI 的「基准指纹库」面板查看 / 删除 / 直接录制
+
+支持的端点：OpenAI 兼容（`/v1/chat/completions`）与 Anthropic（`/v1/messages`）。
+推理模型（如 deepseek-v4-pro）会自动按「默认 → low → none」降档重试，避免 token 全烧在思考上导致正文为空；
+若最终仍拿不到正文，会**拒绝保存**而不是写入一条无效基准。
+
 ## 已知局限
 
 - **黑盒探测**：无法证明“就是官方那台机器”，只能证明“不是你以为的那个模型”。
