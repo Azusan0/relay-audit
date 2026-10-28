@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 本地运行产物
+*.log
+report-*.html
+config.local.json
+keys.json
+
+# OS / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

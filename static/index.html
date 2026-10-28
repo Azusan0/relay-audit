@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>relay-audit · 中转站模型审计</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --line:#d8dee4; --text:#1f2328; --muted:#59636e;
+    --green:#1a7f37; --yellow:#9a6700; --red:#cf222e; --blue:#0969da; --chip:#eaeef2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.55 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  header{padding:14px 20px;background:#24292f;color:#fff;display:flex;align-items:center;gap:12px}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .sub{color:#9aa4b2;font-size:12px}
+  main{max-width:1180px;margin:18px auto;padding:0 16px;display:grid;gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .field{display:flex;flex-direction:column;gap:4px}
+  .field label{font-size:12px;color:var(--muted)}
+  input[type=text],input[type=password],input[type=number],select{
+    height:32px;padding:0 9px;border:1px solid var(--line);border-radius:6px;background:#fff;
+    font:inherit;min-width:140px;outline:none}
+  input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px #0969da22}
+  .grow{flex:1 1 320px;min-width:260px}
+  button{height:32px;padding:0 14px;border:1px solid var(--line);border-radius:6px;background:#fff;
+         font:inherit;cursor:pointer}
+  button:hover{background:#f3f4f6}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+  button.primary:hover{background:#0757ba}
+  button.danger{color:var(--red);border-color:#cf222e55}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .hint{color:var(--muted);font-size:12px}
+  .badge{display:inline-block;padding:1px 7px;border-radius:999px;background:var(--chip);font-size:12px}
+  #models{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;
+          display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px 14px}
+  #models label{display:flex;gap:7px;align-items:center;font-family:ui-monospace,Consolas,monospace;
+                font-size:12.5px;padding:2px 0;cursor:pointer}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+  th{color:var(--muted);font-weight:600;font-size:12px;background:#fafbfc}
+  td.model{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+  .risk{font-weight:700;font-size:15px}
+  .ev{font-size:12.5px;color:var(--text)}
+  .ev div{margin:1px 0}
+  .lv-high{color:var(--red)} .lv-mid{color:var(--yellow)} .lv-good{color:var(--green)} .lv-info{color:var(--muted)}
+  #log{background:#0d1117;color:#c9d1d9;font:12px/1.6 ui-monospace,Consolas,monospace;
+       border-radius:8px;padding:10px 12px;height:150px;overflow:auto;white-space:pre-wrap}
+  .spinner{width:13px;height:13px;border:2px solid #ffffff55;border-top-color:#fff;border-radius:50%;
+           animation:spin .8s linear infinite;display:inline-block;vertical-align:-2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  details summary{cursor:pointer;color:var(--blue);font-size:12px}
+  pre{background:#f6f8fa;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:12px;
+      overflow:auto;max-height:240px;margin:6px 0 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>relay-audit</h1>
+  <span class="sub">中转站模型真伪审计 · 本地运行 · 数据不出本机</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>① 连接中转站</h2>
+    <div class="row">
+      <div class="field grow">
+        <label>Base URL（可带 /v1）</label>
+        <input id="base" type="text" placeholder="https://api.example.com/v1" />
+      </div>
+      <div class="field grow">
+        <label>API Key</label>
+        <input id="key" type="password" placeholder="sk-..." />
+      </div>
+      <div class="field">
+        <label>协议</label>
+        <select id="flavor">
+          <option value="auto" selected>自动（按模型名）</option>
+          <option value="openai">OpenAI 兼容</option>
+          <option value="anthropic">Anthropic 兼容</option>
+        </select>
+      </div>
+      <button id="btnModels" class="primary">拉取模型列表</button>
+    </div>
+    <div class="hint" id="connHint" style="margin-top:8px">先填 base 和 key，然后拉取模型。</div>
+  </section>
+
+  <section class="card">
+    <h2>② 选择要测的模型 <span class="badge" id="cntBadge">0</span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <input id="filter" type="text" placeholder="过滤模型名…" style="min-width:220px" />
+      <button id="btnAll">全选</button>
+      <button id="btnNone">全不选</button>
+      <button id="btnCheap">只选便宜的（deepseek/flash/haiku/mini）</button>
+    </div>
+    <div id="models"><div class="hint">（尚未拉取）</div></div>
+  </section>
+
+  <section class="card">
+    <h2>③ 预算与检测项</h2>
+    <div class="row">
+      <div class="field"><label>总调用上限</label><input id="maxCalls" type="number" value="60" min="1" /></div>
+      <div class="field"><label>每模型调用上限</label><input id="maxPer" type="number" value="8" min="1" /></div>
+      <div class="field"><label>总花费上限 $（0=不限）</label><input id="maxUsd" type="number" value="0.5" step="0.05" min="0" /></div>
+      <div class="field"><label>输入价 $/M</label><input id="pin" type="number" value="5" step="0.1" min="0" /></div>
+      <div class="field"><label>输出价 $/M</label><input id="pout" type="number" value="25" step="0.1" min="0" /></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="badge"><input type="checkbox" id="d_name" checked /> 模型名一致性</label>
+      <label class="badge"><input type="checkbox" id="d_injection" checked /> 注入量</label>
+      <label class="badge"><input type="checkbox" id="d_identity" checked /> 身份/系统提示</label>
+      <label class="badge"><input type="checkbox" id="d_sse" checked /> 流式结构</label>
+      <label class="badge"><input type="checkbox" id="d_bench" checked /> 能力基准</label>
+      <label class="badge"><input type="checkbox" id="d_consistency" checked /> 采样一致性</label>
+      <label class="badge"><input type="checkbox" id="d_dynamic" /> 动态题（需辅助模型）</label>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      预算按“调用次数 + 粗估美元”双重拦截；价格填你被告知的费率即可（只用于估算，不影响判定）。
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>④ 辅助模型（用于动态出题/判卷，可选）</h2>
+    <div class="row">
+      <div class="field grow"><label>Base URL</label><input id="jbase" type="text" value="http://127.0.0.1:3425/v1" /></div>
+      <div class="field grow"><label>Key</label><input id="jkey" type="password" value="magpie" /></div>
+      <div class="field"><label>模型</label><input id="jmodel" type="text" value="workbuddy-ai/deepseek-v4.1-flash" /></div>
+      <div class="field"><label>协议</label>
+        <select id="jflavor"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      默认用你本机的 magpie（免费的 deepseek-v4.1-flash）；也可填任意便宜模型。填写后勾选上面的“动态题”。
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">⑤ 执行</h2>
+      <div class="row">
+        <button id="btnStart" class="primary">开始全测</button>
+        <button id="btnStop" class="danger" disabled>停止</button>
+        <a id="btnExport" class="hint" href="#" style="display:none;align-self:center">导出 HTML 报告</a>
+      </div>
+    </div>
+    <div id="log" style="margin-top:10px">就绪。</div>
+    <div style="margin-top:12px;overflow:auto">
+      <table id="tbl">
+        <thead><tr><th style="width:28%">模型</th><th style="width:9%">风险分</th><th style="width:14%">结论</th><th>证据</th></tr></thead>
+        <tbody id="tbody"><tr><td colspan="4" class="hint">（尚无结果）</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let ALL_MODELS = [];
+let JOB = null;
+let ES = null;
+
+function log(msg) {
+  const el = $("log");
+  el.textContent += (el.textContent.endsWith("\n") ? "" : "\n") + msg;
+  el.scrollTop = el.scrollHeight;
+}
+
+$("btnModels").onclick = async () => {
+  const base = $("base").value.trim(), key = $("key").value.trim(), flavor = $("flavor").value;
+  if (!base || !key) return alert("请先填 Base URL 和 Key");
+  $("connHint").textContent = "正在拉取…";
+  try {
+    const r = await fetch("/api/models", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({base, key, flavor})
+    });
+    const j = await r.json();
+    if (!j.ok) { $("connHint").textContent = "失败：" + (j.error || "未知错误"); return; }
+    ALL_MODELS = j.models;
+    $("connHint").textContent = `成功，共 ${j.models.length} 个模型。`;
+    renderModels();
+  } catch (e) { $("connHint").textContent = "请求出错：" + e; }
+};
+
+function renderModels() {
+  const f = ($("filter").value || "").toLowerCase();
+  const box = $("models");
+  const list = ALL_MODELS.filter(m => m.toLowerCase().includes(f));
+  if (!list.length) { box.innerHTML = '<div class="hint">（无匹配）</div>'; return; }
+  box.innerHTML = list.map(m => `<label><input type="checkbox" value="${m}" ${m.match(/deepseek|flash|haiku|mini/i) ? "checked" : ""}/>${m}</label>`).join("");
+  box.querySelectorAll("input").forEach(cb => cb.onchange = updateCnt);
+  updateCnt();
+}
+function updateCnt() {
+  $("cntBadge").textContent = document.querySelectorAll("#models input:checked").length;
+}
+$("filter").oninput = renderModels;
+$("btnAll").onclick = () => { document.querySelectorAll("#models input").forEach(c => c.checked = true); updateCnt(); };
+$("btnNone").onclick = () => { document.querySelectorAll("#models input").forEach(c => c.checked = false); updateCnt(); };
+$("btnCheap").onclick = () => {
+  document.querySelectorAll("#models input").forEach(c => c.checked = /deepseek|flash|haiku|mini/i.test(c.value));
+  updateCnt();
+};
+
+$("btnStart").onclick = async () => {
+  const models = [...document.querySelectorAll("#models input:checked")].map(c => c.value);
+  if (!models.length) return alert("请至少选择一个模型");
+  const cfg = {
+    base: $("base").value.trim(), key: $("key").value.trim(), flavor: $("flavor").value,
+    models,
+    budget: {
+      max_calls: +$("maxCalls").value, max_calls_per_model: +$("maxPer").value,
+      max_usd: +$("maxUsd").value, price_in_per_m: +$("pin").value, price_out_per_m: +$("pout").value
+    },
+    detectors: {
+      name: $("d_name").checked, injection: $("d_injection").checked, identity: $("d_identity").checked,
+      sse: $("d_sse").checked, bench: $("d_bench").checked, consistency: $("d_consistency").checked,
+      dynamic: $("d_dynamic").checked
+    },
+    judge: $("d_dynamic").checked ? {
+      base: $("jbase").value.trim(), key: $("jkey").value.trim(),
+      model: $("jmodel").value.trim(), flavor: $("jflavor").value
+    } : null
+  };
+  $("tbody").innerHTML = "";
+  $("log").textContent = "开始…";
+  $("btnStart").disabled = true; $("btnStop").disabled = false; $("btnExport").style.display = "none";
+  const r = await fetch("/api/start", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(cfg)});
+  const j = await r.json();
+  if (!j.ok) { alert("启动失败：" + j.error); $("btnStart").disabled = false; return; }
+  JOB = j.job;
+  subscribe(JOB);
+};
+
+function subscribe(job) {
+  if (ES) ES.close();
+  ES = new EventSource("/api/events?job=" + job);
+  ES.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    handle(d);
+  };
+  ES.onerror = () => { if (ES) ES.close(); };
+}
+
+const rows = {};
+function ensureRow(model) {
+  if (rows[model]) return rows[model];
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td class="model"></td><td class="risk">-</td><td class="verdict">-</td><td class="ev"></td>`;
+  tr.querySelector(".model").textContent = model;
+  $("tbody").appendChild(tr);
+  rows[model] = tr;
+  return tr;
+}
+
+function handle(d) {
+  if (d.type === "model_start") { ensureRow(d.model); log(`▶ 开始测 ${d.model}（${d.index + 1}/${d.total}）`); }
+  else if (d.type === "detector") {
+    const tr = ensureRow(d.model);
+    const r = d.result || {};
+    let note = d.detector;
+    if (d.detector === "name" && r.ok) note += r.match ? "：一致" : `：${r.served} ≠ ${r.requested}`;
+    if (d.detector === "injection" && r.ok) note += `：采样 [${(r.samples || []).join("/")}]`;
+    if (d.detector === "identity" && r.ok) note += `：${(r.identity || "").slice(0, 30)}${r.leak_keywords && r.leak_keywords.length ? " ⚠" + r.leak_keywords.join(",") : ""}`;
+    if (d.detector === "sse" && r.ok) note += `：${r.verdict}`;
+    if (d.detector === "bench" && r.ok) note += `：${r.score}/${r.total}`;
+    if (d.detector === "consistency" && r.ok) note += `：${r.answers ? r.answers.join("/") : ""}`;
+    if (d.detector === "dynamic" && r.ok) note += `：${r.passed}/${r.total}`;
+    if (r.skipped) note += `（跳过：${r.detail || ""}）`;
+    const div = document.createElement("div");
+    div.className = "hint";
+    div.textContent = "· " + note;
+    tr.querySelector(".ev").appendChild(div);
+    log("  " + note);
+  }
+  else if (d.type === "model_done") {
+    const tr = ensureRow(d.model);
+    const cls = d.risk < 21 ? "lv-good" : (d.risk < 51 ? "lv-mid" : "lv-high");
+    const rk = tr.querySelector(".risk");
+    rk.textContent = d.risk; rk.className = "risk " + cls;
+    const vd = tr.querySelector(".verdict"); vd.textContent = d.verdict; vd.className = "verdict " + cls;
+    const ev = tr.querySelector(".ev");
+    ev.innerHTML = "";
+    (d.evidence || []).forEach(([lv, t]) => {
+      const x = document.createElement("div");
+      x.className = "lv-" + lv;
+      x.textContent = "• " + t;
+      ev.appendChild(x);
+    });
+    log(`✔ ${d.model} → 风险 ${d.risk}（${d.verdict}）`);
+  }
+  else if (d.type === "log") { log("· " + d.msg); }
+  else if (d.type === "done") {
+    log(`全部完成。调用 ${d.spent_calls} 次，估算 $${d.spent_usd_est}`);
+    $("btnStart").disabled = false; $("btnStop").disabled = true;
+    $("btnExport").href = "/api/export?job=" + JOB;
+    $("btnExport").style.display = "inline";
+    if (ES) ES.close();
+  }
+  else if (d.type === "error") { log("✖ 出错：" + d.msg); $("btnStart").disabled = false; $("btnStop").disabled = true; }
+}
+
+$("btnStop").onclick = async () => {
+  if (!JOB) return;
+  await fetch("/api/stop", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({job: JOB})});
+  log("已请求停止…");
+};
+</script>
+</body>
+</html>
