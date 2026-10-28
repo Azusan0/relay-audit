@@ -115,6 +115,7 @@
       <label class="badge"><input type="checkbox" id="d_identity" checked /> 身份/系统提示</label>
       <label class="badge"><input type="checkbox" id="d_sse" checked /> 流式结构</label>
       <label class="badge"><input type="checkbox" id="d_tokenizer" checked /> Tokenizer 指纹</label>
+      <label class="badge"><input type="checkbox" id="d_chain" checked /> 链路层级</label>
       <label class="badge"><input type="checkbox" id="d_bench" checked /> 能力基准</label>
       <label class="badge"><input type="checkbox" id="d_consistency" checked /> 采样一致性</label>
       <label class="badge"><input type="checkbox" id="d_dynamic" /> 动态题（需辅助模型）</label>
@@ -227,7 +228,7 @@ $("btnStart").onclick = async () => {
     },
     detectors: {
       name: $("d_name").checked, injection: $("d_injection").checked, identity: $("d_identity").checked,
-      sse: $("d_sse").checked, tokenizer: $("d_tokenizer").checked, bench: $("d_bench").checked, consistency: $("d_consistency").checked,
+      sse: $("d_sse").checked, tokenizer: $("d_tokenizer").checked, chain: $("d_chain").checked, bench: $("d_bench").checked, consistency: $("d_consistency").checked,
       dynamic: $("d_dynamic").checked
     },
     judge: $("d_dynamic").checked ? {
@@ -275,6 +276,7 @@ function handle(d) {
     if (d.detector === "name" && r.ok) note += r.match ? "：一致" : `：${r.served} ≠ ${r.requested}`;
     if (d.detector === "injection" && r.ok) note += `：采样 [${(r.samples || []).join("/")}]`;
     if (d.detector === "identity" && r.ok) note += `：${(r.identity || "").slice(0, 30)}${r.leak_keywords && r.leak_keywords.length ? " ⚠" + r.leak_keywords.join(",") : ""}`;
+    if (d.detector === "chain" && r.ok) note += `：${r.tier}${r.chain_fields && r.chain_fields.length ? " (含 " + r.chain_fields.join(",") + ")" : ""}`;
     if (d.detector === "sse" && r.ok) note += `：${r.verdict}`;
     if (d.detector === "bench" && r.ok) note += `：${r.score}/${r.total}`;
     if (d.detector === "consistency" && r.ok) note += `：${r.answers ? r.answers.join("/") : ""}`;
@@ -288,7 +290,7 @@ function handle(d) {
   }
   else if (d.type === "model_done") {
     const tr = ensureRow(d.model);
-    const cls = d.risk < 0 ? "lv-info" : (d.risk < 21 ? "lv-good" : (d.risk < 51 ? "lv-mid" : "lv-high"));
+    const cls = d.risk < 0 ? "lv-info" : (d.risk < 11 ? "lv-good" : (d.risk < 51 ? "lv-mid" : "lv-high"));
     const rk = tr.querySelector(".risk");
     rk.textContent = d.risk < 0 ? "—" : d.risk; rk.className = "risk " + cls;
     const vd = tr.querySelector(".verdict"); vd.textContent = d.verdict; vd.className = "verdict " + cls;

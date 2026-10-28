@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import re
 import string
+import sys
 import threading
 import time
 import urllib.error
@@ -400,6 +402,82 @@ def det_tokenizer(t: Target, budget: Budget) -> dict:
             "delta": delta, "ratio": ratio, "detail": ""}
 
 
+VENDOR_MODEL_RE = re.compile(
+    r"^(claude-(opus|sonnet|haiku)-[\w.\-]+|gpt-[\w.\-]+|o\d[\w\-]*|chatgpt[\w\-]*"
+    r"|grok-[\w.\-]+|gemini-[\w.\-]+|deepseek-[\w.\-]+|glm-[\w.\-]+|kimi-[\w.\-]+"
+    r"|qwen[\w.\-]*|doubao[\w.\-]*|minimax-[\w.\-]+|mimo-[\w.\-]+|hy[\w.\-]*)$", re.I)
+
+ANTHROPIC_USAGE = {"input_tokens", "output_tokens",
+                   "cache_creation_input_tokens", "cache_read_input_tokens"}
+OPENAI_USAGE = {"prompt_tokens", "completion_tokens", "total_tokens",
+                "prompt_tokens_details", "completion_tokens_details"}
+
+# 这些字段不是厂商 API 的，而是中转软件（new-api / one-api 等）自己加的
+CHAIN_USAGE_FIELDS = {"credit_unit", "credit_unit_plural", "credit_usage", "credits",
+                      "credit", "quota", "balance", "cost", "price"}
+CHAIN_HEADER_HINTS = ("x-oneapi", "x-newapi", "x-new-api", "x-relay", "x-client-request-id",
+                      "x-channel", "x-upstream", "x-proxy")
+CHAIN_ERROR_HINTS = ("上游", "upstream", "new_api", "newapi", "one-api", "oneapi",
+                     "渠道", "channel", "供应商", "provider error")
+
+
+def det_chain(t: Target, budget: Budget) -> dict:
+    """判断是不是「中转的中转」：看响应里有没有上一层的痕迹。
+
+    自有号池的典型特征：model 名是厂商规范名、usage 只有厂商字段、无额外包装。
+    转售别家中转的典型特征：模型名是别人的别名（如 claude-sonnet-5-5 / gpt-6-luna）、
+    usage 里混入 credit_usage 之类非厂商字段、错误文案是"上游服务暂时不可用"、
+    响应头带 oneapi/newapi 等中转软件标识。
+    """
+    status, headers, resp, text, pin, pout, err = call_target(
+        t, {"messages": [{"role": "user", "content": "ping"}]}, budget, max_tokens=2)
+    if status != 200 or err:
+        return {"detector": "链路层级", "ok": False,
+                "detail": err or f"HTTP {status}", "status": status}
+    served = (resp.get("model") or "") if isinstance(resp, dict) else ""
+    usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
+    vendor_usage = ANTHROPIC_USAGE if t.flavor == "anthropic" else OPENAI_USAGE
+    extra = sorted(set(usage) - vendor_usage)
+    chain_fields = sorted(set(usage) & CHAIN_USAGE_FIELDS)
+    hl = {str(k).lower(): str(v) for k, v in headers.items()}
+    header_hits = sorted({h for h in CHAIN_HEADER_HINTS if any(h in k for k in hl)})
+    err_text = json.dumps(resp, ensure_ascii=False)[:2000] if resp else ""
+    err_hits = [k for k in CHAIN_ERROR_HINTS if k in err_text.lower() or k in err_text]
+
+    reasons, score = [], 0
+    if not VENDOR_MODEL_RE.match(t.model):
+        reasons.append(f"请求的模型名不是厂商规范名：{t.model}")
+        score += 8
+    if served and not VENDOR_MODEL_RE.match(served):
+        reasons.append(f"返回的模型名是第三方别名：{served}（厂商无此名）")
+        score += 15
+    if served and VENDOR_MODEL_RE.match(t.model) and served.lower() != t.model.lower() \
+            and VENDOR_MODEL_RE.match(served):
+        reasons.append(f"模型被改派：{t.model} → {served}")
+        score += 10
+    if chain_fields or extra:
+        reasons.append(f"usage 含非厂商字段：{', '.join(chain_fields + [x for x in extra if x not in chain_fields])}")
+        score += 12
+    if header_hits:
+        reasons.append(f"响应头有中转软件标识：{', '.join(header_hits)}")
+        score += 12
+    if err_hits:
+        reasons.append(f"错误/响应体出现中转特征词：{', '.join(err_hits[:4])}")
+        score += 6
+
+    # 自身是中转软件（oneapi 头）却出现别家中转的字段（credit_usage 等）
+    # → 说明它把请求又转给了另一层中转，而不是直连厂商号池
+    if chain_fields and header_hits:
+        reasons.append("既有中转软件响应头，又含上游中转的自有字段 → 上游仍是中转")
+        score += 8
+
+    tier = ("疑似自有号池/直销" if score <= 8
+            else "一层中转" if score <= 24 else "疑似中转的中转")
+    return {"detector": "链路层级", "ok": True, "score": score, "tier": tier,
+            "served": served, "extra_usage": extra, "chain_fields": chain_fields,
+            "header_hits": header_hits, "reasons": reasons, "detail": ""}
+
+
 def det_bench(t: Target, budget: Budget, suite: dict) -> dict:
     status, _h, resp, text, pin, pout, err = call_target(
         t, {"messages": [{"role": "user", "content": suite["prompt"]}]}, budget, max_tokens=600)
@@ -524,6 +602,19 @@ def score_model(findings: dict, suite_len: int, aliases: dict | None = None) -> 
             risk += 15
             ev.append(("mid", f"自称旧版本模型：{ident.get('identity')}"))
 
+    ch = findings.get("chain")
+    if ch and ch.get("ok"):
+        sc = ch.get("score", 0)
+        reasons = "；".join(ch.get("reasons", [])[:3])
+        if sc >= 25:
+            risk += 30
+            ev.append(("high", f"疑似【中转的中转】（{ch['tier']}）：{reasons}"))
+        elif sc >= 9:
+            risk += 15
+            ev.append(("mid", f"链路层级：{ch['tier']} —— {reasons}"))
+        else:
+            ev.append(("good", f"链路层级：{ch['tier']}（模型名与 usage 都符合厂商规范）"))
+
     sse = findings.get("sse")
     if sse and sse.get("ok") and sse.get("verdict") == "与声明不符":
         risk += 25
@@ -552,13 +643,70 @@ def score_model(findings: dict, suite_len: int, aliases: dict | None = None) -> 
 
 
 def verdict_of(risk: int) -> str:
+    if risk < 0:
+        return "无法判定（接口不可用）"
     if risk >= 76:
         return "极可能造假"
     if risk >= 51:
         return "高风险"
-    if risk >= 21:
+    if risk >= 11:
         return "需注意"
     return "暂未发现问题"
+
+
+# ---------------------------------------------------------------- 基准指纹库
+
+BASELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baselines")
+
+
+def load_baselines() -> list:
+    out = []
+    if os.path.isdir(BASELINE_DIR):
+        for fn in sorted(os.listdir(BASELINE_DIR)):
+            if fn.endswith(".json"):
+                try:
+                    with open(os.path.join(BASELINE_DIR, fn), encoding="utf-8") as f:
+                        b = json.load(f)
+                    b["_file"] = fn
+                    out.append(b)
+                except Exception:  # noqa: BLE001
+                    pass
+    return out
+
+
+def _vec_sim(a, b) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    return sum(1 for x, y in zip(a, b) if x == y) / len(a)
+
+
+def record_baseline(name: str, base: str, key: str, flavor: str, model: str,
+                    samples: int = 3) -> tuple:
+    """在官方/可信端点上录一次签名，供以后比对。"""
+    suite = build_suite()
+    b = Budget(max_calls=24, max_calls_per_model=12, max_usd=2.0)
+    t = Target(base, key, flavor, model)
+    nm = det_name(t, b)
+    inj = det_injection(t, b, samples=samples)
+    tk = det_tokenizer(t, b)
+    bn = det_bench(t, b, suite)
+    sig = {
+        "name": name,
+        "family": re.sub(r"[^a-z0-9.\-]", "", model.split("/")[-1].lower()),
+        "model": model,
+        "served": nm.get("served"),
+        "vec": (bn or {}).get("vec", []),
+        "bench": f"{(bn or {}).get('score', 0)}/{(bn or {}).get('total', 0)}",
+        "tokenizer": {"delta": tk.get("delta"), "ratio": tk.get("ratio")} if tk.get("ok") else None,
+        "injection_samples": inj.get("samples"),
+        "recorded": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "base": base,
+    }
+    os.makedirs(BASELINE_DIR, exist_ok=True)
+    path = os.path.join(BASELINE_DIR, re.sub(r"[^A-Za-z0-9._-]+", "_", name) + ".json")
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(sig, fp, ensure_ascii=False, indent=2)
+    return path, sig
 
 
 # ---------------------------------------------------------------- 主流程
@@ -599,6 +747,7 @@ def audit(config: dict, progress=None, should_stop=None):
             ("name", lambda: det_name(t, budget)),
             ("injection", lambda: det_injection(t, budget)),
             ("identity", lambda: det_identity(t, budget)),
+            ("chain", lambda: det_chain(t, budget)),
             ("sse", lambda: det_sse(t, budget)),
             ("tokenizer", lambda: det_tokenizer(t, budget)),
             ("bench", lambda: det_bench(t, budget, suite)),
@@ -637,6 +786,26 @@ def audit(config: dict, progress=None, should_stop=None):
         emit("model_done", model=model, risk=risk, verdict=verdict_of(risk),
              evidence=evidence)
 
+    # 与基准指纹库比对：答案最像谁，就说明它其实是谁
+    baselines = load_baselines()
+    if baselines:
+        for model, r in report["models"].items():
+            vec = (r["findings"].get("bench") or {}).get("vec")
+            if not vec:
+                continue
+            scored = sorted(((_vec_sim(vec, b.get("vec") or []), b) for b in baselines),
+                            key=lambda x: -x[0])
+            best_sim, best = scored[0]
+            if best_sim >= 0.6:
+                r["evidence"].append(("info", f"与基准「{best.get('name')}」答案相似度 {best_sim:.2f}"))
+                fam = (best.get("family") or "").lower()
+                if fam and fam not in model.lower():
+                    r["risk"] = min(100, r["risk"] + 25)
+                    r["evidence"].append(
+                        ("high", f"自称 {model}，但答案最接近基准「{best.get('name')}」→ 疑似冒名"))
+                    r["verdict"] = verdict_of(r["risk"])
+                emit("log", msg=f"{model} 最接近基准 {best.get('name')}（{best_sim:.2f}）")
+
     # 跨模型同源检测 A：答案向量完全相同（含相同错误）= 同一后端
     groups = {}
     for model, r in report["models"].items():
@@ -672,3 +841,14 @@ def audit(config: dict, progress=None, should_stop=None):
     report["spent_calls"] = budget.calls
     report["spent_usd_est"] = round(budget.usd, 4)
     return report
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 7 and sys.argv[1] == "record":
+        _path, _sig = record_baseline(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
+        print("已保存基准:", _path)
+        print(json.dumps({k: v for k, v in _sig.items() if k != "vec"},
+                         ensure_ascii=False, indent=2))
+    else:
+        print("用法: python engine.py record <名称> <base> <key> <openai|anthropic> <model>")
+        print("示例: python engine.py record official-claude-sonnet-5 https://api.anthropic.com sk-ant-xxx anthropic claude-sonnet-5")

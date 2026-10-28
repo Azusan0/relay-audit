@@ -29,6 +29,7 @@
 | **Tokenizer 指纹** | 发 300 个 ASCII 字符、150 个汉字（`max_tokens=1`），取两次 `prompt_tokens` 的差值 | **参考项**（不是硬判据）：差值能抵消固定的系统提示，但注入量本身会随机波动，Δ 不稳定；只在两个模型 Δ/ratio 完全一致时才判同源 |
 | **能力基准** | 5 道有确定答案的题（答案由本机 Python 现算） | 水平明显对不上宣称档位 |
 | **采样一致性** | 同一题连问 3 次 | temperature=0 下应稳定；抖动过大说明后端不稳 |
+| **链路层级** | 看响应里有没有“上一层的痕迹”：模型名是否厂商规范名、`usage` 是否混入 `credit_usage` 这类非厂商字段、响应头是否带 `oneapi/newapi`、错误文案是否“上游服务暂时不可用” | 区分 **自有号池（直销）/ 一层中转 / 中转的中转**；后者既吃 token 又降质量 |
 | **动态题（AI）** | 用便宜模型现场出题 + 判卷 | 防止被“背题库”的中转站识别成测试流量 |
 
 另外还有一层**跨模型检测**：如果两个不同模型名给出**完全相同**的答案向量（包括相同的错误值），会被标记为「疑似同一后端换名」——这是识破“opus 其实是 sonnet”最有力的一招。
@@ -55,6 +56,18 @@
 2. **答案向量聚类**：所有被测模型跑同一套题，按答案向量分组；连错误值都相同 → 同一后端。
 
 所以正确的用法是**至少选两个不同档位的模型一起测**，让工具去聚类，而不是预设谁对应谁。
+
+## 基准指纹库
+
+先用官方/可信端点录一次签名，之后拿任意中转站来比对“它到底最像谁”：
+
+```powershell
+python engine.py record official-claude-sonnet-5 https://api.anthropic.com sk-ant-xxx anthropic claude-sonnet-5
+python engine.py record official-deepseek-v4     https://api.deepseek.com/v1 sk-xxx openai deepseek-chat
+```
+
+签名存 `baselines/*.json`（答案向量、tokenizer、served、注入样本）。此后每次审计自动比对：
+**答案最接近哪个基准**；若最接近的基准与它自称的型号不一致 → 判定冒名（例如“自称 claude，答案却最像官方 deepseek”）。
 
 ## 已知局限
 

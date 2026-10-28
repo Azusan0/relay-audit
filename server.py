@@ -188,7 +188,7 @@ def render_report_html(report: dict) -> str:
         if risk < 0:
             color, risk_txt = "#57606a", "—"
         else:
-            color = "#1a7f37" if risk < 21 else ("#9a6700" if risk < 51 else "#cf222e")
+            color = "#1a7f37" if risk < 11 else ("#9a6700" if risk < 51 else "#cf222e")
             risk_txt = str(risk)
         ev = "<br>".join(
             f"<span style='color:{'#cf222e' if lv == 'high' else ('#9a6700' if lv == 'mid' else ('#1a7f37' if lv == 'good' else '#57606a'))}'>• {esc(t)}</span>"
