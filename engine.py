@@ -74,7 +74,10 @@ def _endpoint(base: str, flavor: str, path: str) -> str:
 
 
 def _headers(key: str, flavor: str) -> dict:
-    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    # 注意：不少中转站/ WAF 会直接把 Python-urllib 的 UA 判为机器人并返回 403，
+    # 这里固定成 curl 的 UA（实测可绕过此类拦截）。
+    h = {"Content-Type": "application/json", "Accept": "application/json",
+         "User-Agent": "curl/8.4.0"}
     if flavor == "anthropic":
         h["x-api-key"] = key
         h["Authorization"] = "Bearer " + key
@@ -84,8 +87,12 @@ def _headers(key: str, flavor: str) -> dict:
     return h
 
 
+TRANSIENT_HINTS = ("暂时不可用", "稍后重试", "temporar", "try again", "rate limit",
+                   "overload", "timeout", "服务繁忙", "服务器错误")
+
+
 def http_post(base: str, key: str, flavor: str, payload: dict,
-              timeout: float = 90, retries: int = 1):
+              timeout: float = 90, retries: int = 2):
     url = _endpoint(base, flavor, "messages" if flavor == "anthropic" else "chat/completions")
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     last = None
@@ -96,8 +103,11 @@ def http_post(base: str, key: str, flavor: str, payload: dict,
                 return r.status, dict(r.headers), json.loads(r.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
-            if e.code == 429 and attempt < retries:
-                time.sleep(3)
+            low = body.lower()
+            transient = (e.code == 429 or e.code in (403, 500, 502, 503, 504)
+                         and any(h in body or h in low for h in TRANSIENT_HINTS))
+            if transient and attempt < retries:
+                time.sleep(2.0 * (attempt + 1))
                 continue
             try:
                 return e.code, dict(e.headers or {}), json.loads(body)
@@ -106,7 +116,7 @@ def http_post(base: str, key: str, flavor: str, payload: dict,
         except Exception as e:  # noqa: BLE001
             last = e
             if attempt < retries:
-                time.sleep(1.5)
+                time.sleep(1.5 * (attempt + 1))
     return -1, {}, {"error": {"message": f"网络错误: {last!r}"}}
 
 
@@ -367,6 +377,29 @@ def det_sse(t: Target, budget: Budget) -> dict:
             "verdict": verdict, "detail": ""}
 
 
+def det_tokenizer(t: Target, budget: Budget) -> dict:
+    """Tokenizer 指纹（与型号无关）。
+
+    发两段等长文本：300 个 ASCII 字符、150 个汉字，max_tokens=1。
+    系统提示是常数，两次 prompt_tokens 相减即可抵消注入，
+    剩下 delta / ratio 只反映分词器。不同厂商分词器不同；
+    两个名字不同的模型指纹完全一致 → 同一后端。
+    """
+    vals = {}
+    for name, s in (("ascii", "a" * 300), ("cjk", "字" * 150)):
+        status, _h, resp, _text, pin, _pout, err = call_target(
+            t, {"messages": [{"role": "user", "content": s}]}, budget, max_tokens=1)
+        if status != 200 or err:
+            return {"detector": "Tokenizer 指纹", "ok": False,
+                    "detail": err or f"HTTP {status}"}
+        vals[name] = int(pin)
+    delta = vals["cjk"] - vals["ascii"]
+    ratio = round(vals["cjk"] / max(1, vals["ascii"]), 3)
+    return {"detector": "Tokenizer 指纹", "ok": True,
+            "tok_ascii": vals["ascii"], "tok_cjk": vals["cjk"],
+            "delta": delta, "ratio": ratio, "detail": ""}
+
+
 def det_bench(t: Target, budget: Budget, suite: dict) -> dict:
     status, _h, resp, text, pin, pout, err = call_target(
         t, {"messages": [{"role": "user", "content": suite["prompt"]}]}, budget, max_tokens=600)
@@ -567,6 +600,7 @@ def audit(config: dict, progress=None, should_stop=None):
             ("injection", lambda: det_injection(t, budget)),
             ("identity", lambda: det_identity(t, budget)),
             ("sse", lambda: det_sse(t, budget)),
+            ("tokenizer", lambda: det_tokenizer(t, budget)),
             ("bench", lambda: det_bench(t, budget, suite)),
             ("consistency", lambda: det_consistency(t, budget)),
             ("dynamic", lambda: det_ai_dynamic(t, budget, judge)),
@@ -586,19 +620,29 @@ def audit(config: dict, progress=None, should_stop=None):
             except Exception as e:  # noqa: BLE001
                 f[name] = {"detector": name, "ok": False, "detail": f"{e!r}"}
                 emit("detector", model=model, detector=name, result=f[name])
+        ok_count = sum(1 for v in f.values() if isinstance(v, dict) and v.get("ok"))
+        if ok_count == 0:
+            first_err = next((v.get("detail") for v in f.values()
+                              if isinstance(v, dict) and v.get("detail")), "接口不可用")
+            report["models"][model] = {
+                "findings": f, "risk": -1, "verdict": "无法判定（接口不可用）", "flavor": flav,
+                "evidence": [("high", f"所有检测项均未成功：{first_err}")]
+            }
+            emit("model_done", model=model, risk=-1, verdict="无法判定（接口不可用）",
+                 evidence=report["models"][model]["evidence"])
+            continue
         risk, evidence = score_model(f, len(suite["questions"]), aliases)
         report["models"][model] = {"findings": f, "risk": risk, "verdict": verdict_of(risk),
                                    "flavor": flav, "evidence": evidence}
         emit("model_done", model=model, risk=risk, verdict=verdict_of(risk),
              evidence=evidence)
 
-    # 跨模型同源检测：答案向量完全相同（含相同错误）= 同一后端
+    # 跨模型同源检测 A：答案向量完全相同（含相同错误）= 同一后端
     groups = {}
     for model, r in report["models"].items():
         vec = (r["findings"].get("bench") or {}).get("vec")
         if vec:
-            key_v = "|".join(vec)
-            groups.setdefault(key_v, []).append(model)
+            groups.setdefault("|".join(vec), []).append(model)
     for vec, ms in groups.items():
         if len(ms) > 1 and "WRONG" in vec:
             for m in ms:
@@ -606,7 +650,23 @@ def audit(config: dict, progress=None, should_stop=None):
                 report["models"][m]["evidence"].append(
                     ("high", f"与 {', '.join(x for x in ms if x != m)} 的答案向量完全一致（含相同错误）→ 疑似同一后端换名"))
                 report["models"][m]["verdict"] = verdict_of(report["models"][m]["risk"])
-            emit("log", msg=f"疑似同源：{', '.join(ms)}")
+            emit("log", msg=f"疑似同源(答案向量)：{', '.join(ms)}")
+
+    # 跨模型同源检测 B：Tokenizer 指纹完全一致 = 同一分词器/后端（与型号名无关）
+    tg = {}
+    for model, r in report["models"].items():
+        f = r["findings"].get("tokenizer")
+        if f and f.get("ok"):
+            tg.setdefault((f["delta"], f["ratio"]), []).append(model)
+    for (delta, ratio), ms in tg.items():
+        if len(ms) > 1:
+            for m in ms:
+                report["models"][m]["risk"] = min(100, report["models"][m]["risk"] + 30)
+                report["models"][m]["evidence"].append(
+                    ("high", f"Tokenizer 指纹与 {', '.join(x for x in ms if x != m)} 完全一致"
+                             f"（delta={delta}, ratio={ratio}）→ 同一分词器/同一后端，与模型名无关"))
+                report["models"][m]["verdict"] = verdict_of(report["models"][m]["risk"])
+            emit("log", msg=f"疑似同源(Tokenizer)：{', '.join(ms)}")
 
     report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
     report["spent_calls"] = budget.calls

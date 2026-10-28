@@ -184,13 +184,18 @@ def render_report_html(report: dict) -> str:
 
     rows = []
     for model, r in report["models"].items():
-        color = "#1a7f37" if r["risk"] < 21 else ("#9a6700" if r["risk"] < 51 else "#cf222e")
+        risk = r.get("risk", 0)
+        if risk < 0:
+            color, risk_txt = "#57606a", "—"
+        else:
+            color = "#1a7f37" if risk < 21 else ("#9a6700" if risk < 51 else "#cf222e")
+            risk_txt = str(risk)
         ev = "<br>".join(
             f"<span style='color:{'#cf222e' if lv == 'high' else ('#9a6700' if lv == 'mid' else ('#1a7f37' if lv == 'good' else '#57606a'))}'>• {esc(t)}</span>"
             for lv, t in r["evidence"])
         rows.append(f"""<tr>
           <td style="font-family:monospace">{esc(model)}</td>
-          <td style="color:{color};font-weight:700">{r['risk']}</td>
+          <td style="color:{color};font-weight:700">{risk_txt}</td>
           <td style="color:{color}">{esc(r['verdict'])}</td>
           <td>{ev}</td></tr>""")
     suite = "".join(

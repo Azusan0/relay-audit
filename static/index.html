@@ -95,6 +95,7 @@
       <button id="btnAll">全选</button>
       <button id="btnNone">全不选</button>
       <button id="btnCheap">只选便宜的（deepseek/flash/haiku/mini）</button>
+      <button id="btnRef" title="自动勾选一个最便宜 + 一个最贵做参照，用于同源对比">＋参照组</button>
     </div>
     <div id="models"><div class="hint">（尚未拉取）</div></div>
   </section>
@@ -113,6 +114,7 @@
       <label class="badge"><input type="checkbox" id="d_injection" checked /> 注入量</label>
       <label class="badge"><input type="checkbox" id="d_identity" checked /> 身份/系统提示</label>
       <label class="badge"><input type="checkbox" id="d_sse" checked /> 流式结构</label>
+      <label class="badge"><input type="checkbox" id="d_tokenizer" checked /> Tokenizer 指纹</label>
       <label class="badge"><input type="checkbox" id="d_bench" checked /> 能力基准</label>
       <label class="badge"><input type="checkbox" id="d_consistency" checked /> 采样一致性</label>
       <label class="badge"><input type="checkbox" id="d_dynamic" /> 动态题（需辅助模型）</label>
@@ -185,34 +187,13 @@ $("btnModels").onclick = async () => {
   } catch (e) { $("connHint").textContent = "请求出错：" + e; }
 };
 
-function siblingOf(m) {
-  // 同代对照：opus->sonnet（用于识破"换名但同一后端"）
-  if (!/opus/i.test(m)) return null;
-  const s = m.replace(/opus/gi, (x) => x[0] === "O" ? "Sonnet" : "sonnet");
-  return s === m ? null : s;
-}
-function onToggle(cb) {
-  const m = cb.value;
-  if (cb.checked) {
-    const sib = siblingOf(m);
-    if (sib && ALL_MODELS.includes(sib)) {
-      const el = [...document.querySelectorAll("#models input")].find(x => x.value === sib);
-      if (el && !el.checked) {
-        el.checked = true;
-        el.parentElement.style.background = "#fff8c5";
-        setTimeout(() => (el.parentElement.style.background = ""), 1500);
-      }
-    }
-  }
-  updateCnt();
-}
 function renderModels() {
   const f = ($("filter").value || "").toLowerCase();
   const box = $("models");
   const list = ALL_MODELS.filter(m => m.toLowerCase().includes(f));
   if (!list.length) { box.innerHTML = '<div class="hint">（无匹配）</div>'; return; }
   box.innerHTML = list.map(m => `<label><input type="checkbox" value="${m}" ${m.match(/deepseek|flash|haiku|mini/i) ? "checked" : ""}/>${m}</label>`).join("");
-  box.querySelectorAll("input").forEach(cb => cb.onchange = () => onToggle(cb));
+  box.querySelectorAll("input").forEach(cb => cb.onchange = updateCnt);
   updateCnt();
 }
 function updateCnt() {
@@ -224,6 +205,14 @@ $("btnNone").onclick = () => { document.querySelectorAll("#models input").forEac
 $("btnCheap").onclick = () => {
   document.querySelectorAll("#models input").forEach(c => c.checked = /deepseek|flash|haiku|mini/i.test(c.value));
   updateCnt();
+};
+$("btnRef").onclick = () => {
+  const cbs = [...document.querySelectorAll("#models input")];
+  const cheap = cbs.find(x => /deepseek|flash|mini|haiku/i.test(x.value));
+  const pricey = [...cbs].reverse().find(x => /opus|astra|pro|max|sol/i.test(x.value));
+  [cheap, pricey].forEach(x => { if (x) { x.checked = true; x.parentElement.style.background = "#ddf4ff"; setTimeout(() => (x.parentElement.style.background = ""), 1500); } });
+  updateCnt();
+  if (!cheap && !pricey) alert("没找到可作参照的模型，请手动勾选至少两个");
 };
 
 $("btnStart").onclick = async () => {
@@ -238,7 +227,7 @@ $("btnStart").onclick = async () => {
     },
     detectors: {
       name: $("d_name").checked, injection: $("d_injection").checked, identity: $("d_identity").checked,
-      sse: $("d_sse").checked, bench: $("d_bench").checked, consistency: $("d_consistency").checked,
+      sse: $("d_sse").checked, tokenizer: $("d_tokenizer").checked, bench: $("d_bench").checked, consistency: $("d_consistency").checked,
       dynamic: $("d_dynamic").checked
     },
     judge: $("d_dynamic").checked ? {
@@ -299,9 +288,9 @@ function handle(d) {
   }
   else if (d.type === "model_done") {
     const tr = ensureRow(d.model);
-    const cls = d.risk < 21 ? "lv-good" : (d.risk < 51 ? "lv-mid" : "lv-high");
+    const cls = d.risk < 0 ? "lv-info" : (d.risk < 21 ? "lv-good" : (d.risk < 51 ? "lv-mid" : "lv-high"));
     const rk = tr.querySelector(".risk");
-    rk.textContent = d.risk; rk.className = "risk " + cls;
+    rk.textContent = d.risk < 0 ? "—" : d.risk; rk.className = "risk " + cls;
     const vd = tr.querySelector(".verdict"); vd.textContent = d.verdict; vd.className = "verdict " + cls;
     const ev = tr.querySelector(".ev");
     ev.innerHTML = "";
